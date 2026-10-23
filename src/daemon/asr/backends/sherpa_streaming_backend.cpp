@@ -16,14 +16,13 @@
 #include <vector>
 
 #include "common/asr/model_manager.h"
-#include "common/config/core_config.h"
 #include "common/config/core_config_types.h"
-#include "common/i18n.h"
 #include "common/json/json_access.h"
 #include "common/utils/string_utils.h"
 
 #include "daemon/asr/asr_config.h"
 #include "daemon/asr/hotword_utils.h"
+#include "daemon/asr/local_asr_model_loader.h"
 #include "daemon/asr/runtime/recognition_contract.h"
 #include "daemon/asr/sherpa_json_helpers.h"
 
@@ -457,42 +456,17 @@ private:
 
 } // namespace
 
-std::unique_ptr<AsrBackend> CreateSherpaStreamingBackend(const CoreConfig& config,
-                                                         const LocalAsrProvider& provider,
+std::unique_ptr<AsrBackend> CreateSherpaStreamingBackend(const LocalAsrProvider& provider,
+                                                         LocalAsrModelContext context,
                                                          std::string* error) {
-  if (provider.model.empty()) {
-    if (error != nullptr) {
-      *error = vinput::str::FmtStr(_("Local ASR model configuration is missing for provider '%s'."),
-                                   provider.id);
-    }
-    return nullptr;
-  }
-
-  ModelManager model_mgr(ResolveModelBaseDir(config).string(), provider.model);
-  std::string model_error;
-  if (!model_mgr.EnsureModels(&model_error)) {
-    if (error != nullptr) {
-      *error = "Local ASR model check failed for provider '" + provider.id + "'";
-      if (!model_error.empty()) {
-        *error += ": " + model_error;
-      } else {
-        *error += ".";
-      }
-    }
-    return nullptr;
-  }
-
-  AsrConfig asr_config;
-  const ModelInfo model_info = model_mgr.GetModelInfo();
-  asr_config.language = model_info.RuntimeLanguageHint();
-  asr_config.hotwords_file = provider.hotwordsFile;
-  asr_config.vad_enabled = false;
-  asr_config.vad_model_path.clear();
+  context.asr_config.vad_enabled = false;
+  context.asr_config.vad_model_path.clear();
 
   if (error != nullptr) {
     error->clear();
   }
-  return std::make_unique<SherpaStreamingBackend>(model_info, std::move(asr_config), provider.id);
+  return std::make_unique<SherpaStreamingBackend>(context.info, std::move(context.asr_config),
+                                                  provider.id);
 }
 
 } // namespace vinput::daemon::asr
