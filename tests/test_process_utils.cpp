@@ -1,3 +1,4 @@
+#include <algorithm>
 #include <array>
 #include <cerrno>
 #include <chrono>
@@ -5,11 +6,14 @@
 #include <cstdlib>
 #include <fcntl.h>
 #include <iostream>
+#include <span>
 #include <string>
+#include <string_view>
 #include <sys/types.h>
 #include <sys/wait.h>
 #include <thread>
 #include <unistd.h>
+#include <utility>
 
 #include "common/utils/process_utils.h"
 
@@ -23,6 +27,16 @@ void ExpectTrue(bool condition, const std::string& message) {
     std::abort();
   }
 }
+
+// Collects everything a pump forwards, so a test can compare the full byte stream.
+class CollectSink final : public vinput::process::PumpSink {
+public:
+  void OnStdout(std::string_view chunk) override { out.append(chunk); }
+  void OnStderr(std::string_view chunk) override { err.append(chunk); }
+
+  std::string out;
+  std::string err;
+};
 
 void TestNormalExecution() {
   vinput::process::CommandSpec spec;
@@ -227,6 +241,172 @@ void TestRunCommandCaptureStdout() {
   ExpectTrue(!timeout_res.has_value(), "Timed out command should return unexpected");
 }
 
+/**
+ * PumpIo must forward everything a channel delivers and report the channel as closed once the
+ * write end is gone. No child process is involved: the pump owns no lifecycle.
+ */
+void TestPumpIoForwardsChannelOutput() {
+  int pipefd[2] = {-1, -1};
+  ExpectTrue(vinput::process::CreateCloexecPipe(pipefd), "CreateCloexecPipe should succeed");
+
+  const std::string payload = "first chunk\nsecond chunk\n";
+  const ssize_t written = write(pipefd[1], payload.data(), payload.size());
+  ExpectTrue(std::cmp_equal(written, payload.size()), "Payload should fit the pipe buffer");
+  close(pipefd[1]);
+
+  CollectSink sink;
+  vinput::process::PumpChild child;
+  child.channels.stdout_fd = pipefd[0];
+  child.exited = [](int* exit_code) {
+    if (exit_code != nullptr) {
+      *exit_code = 0;
+    }
+    return true;
+  };
+
+  vinput::process::PumpOptions options;
+  options.deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+  const auto result = vinput::process::PumpIo(child, {}, options, sink);
+
+  ExpectTrue(!result.timed_out, "Draining a closed channel must not time out");
+  ExpectTrue(result.stdout_closed, "Closed write end must be reported");
+  ExpectTrue(sink.out == payload, "Sink should receive the payload unchanged: " + sink.out);
+  close(pipefd[0]);
+}
+
+/**
+ * A pump with no exit probe and a channel that never closes must still return when its deadline
+ * expires, so a hung child can never block the caller forever.
+ */
+void TestPumpIoHonoursDeadlineWithoutExitProbe() {
+  int pipefd[2] = {-1, -1};
+  ExpectTrue(vinput::process::CreateCloexecPipe(pipefd), "CreateCloexecPipe should succeed");
+
+  CollectSink sink;
+  vinput::process::PumpChild child;
+  child.channels.stdout_fd = pipefd[0];
+
+  vinput::process::PumpOptions options;
+  options.poll_slice = std::chrono::milliseconds(10);
+  options.deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(80);
+
+  const auto start = std::chrono::steady_clock::now();
+  const auto result = vinput::process::PumpIo(child, {}, options, sink);
+  const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
+                           std::chrono::steady_clock::now() - start)
+                           .count();
+
+  ExpectTrue(result.timed_out, "Expired deadline must be reported as a timeout");
+  ExpectTrue(!result.child_exited, "No probe means no confirmed exit");
+  ExpectTrue(elapsed < 500,
+             "Deadline must bound the pump (elapsed=" + std::to_string(elapsed) + "ms)");
+
+  close(pipefd[0]);
+  close(pipefd[1]);
+}
+
+/**
+ * PumpIo delivers the input span into the child's stdin channel and invokes the caller's close hook
+ * exactly once, so the owner can release its own handle.
+ */
+void TestPumpIoWritesInputAndClosesHandle() {
+  int pipefd[2] = {-1, -1};
+  ExpectTrue(vinput::process::CreateCloexecPipe(pipefd), "CreateCloexecPipe should succeed");
+
+  const std::string payload = "payload-for-child";
+  int close_calls = 0;
+  CollectSink sink;
+
+  vinput::process::PumpChild child;
+  child.channels.input_fd = pipefd[1];
+  child.close_input = [&close_calls, &pipefd]() {
+    ++close_calls;
+    close(pipefd[1]);
+  };
+
+  vinput::process::PumpOptions options;
+  options.deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+
+  const auto bytes = std::as_bytes(std::span(payload.data(), payload.size()));
+  const auto result = vinput::process::PumpIo(child, bytes, options, sink);
+
+  ExpectTrue(!result.timed_out, "Writing a small payload must not time out");
+  ExpectTrue(!result.input_incomplete, "Small payload should be fully accepted");
+  ExpectTrue(close_calls == 1,
+             "Close hook must run exactly once, got " + std::to_string(close_calls));
+
+  std::string received;
+  std::array<char, 64> buffer{};
+  const ssize_t n = read(pipefd[0], buffer.data(), buffer.size());
+  if (n > 0) {
+    received.append(buffer.data(), static_cast<std::size_t>(n));
+  }
+  ExpectTrue(received == payload, "Child side should observe the payload: " + received);
+  close(pipefd[0]);
+}
+
+/**
+ * RunOnce must deliver stdin and then close it, which is what makes a filtering child exit.
+ */
+void TestRunOnceFeedsStdin() {
+  vinput::process::CommandSpec spec;
+  spec.command = "sh";
+  spec.args = {"-c", "cat"};
+  spec.timeout_ms = 2000;
+
+  const std::string payload = "dictation text\n";
+  const auto bytes = std::as_bytes(std::span(payload.data(), payload.size()));
+  const auto result = vinput::process::RunOnce(spec, bytes);
+
+  ExpectTrue(!result.launch_failed, "Launch should succeed");
+  ExpectTrue(!result.timed_out, "Feeding stdin should not time out");
+  ExpectTrue(result.exit_code == 0, "Child should exit cleanly after stdin closes");
+  ExpectTrue(result.stdout_text == payload, "Child should echo the input: " + result.stdout_text);
+}
+
+/**
+ * A child that writes more than one read budget must not lose or truncate output.
+ */
+void TestRunOnceDrainsLargeOutput() {
+  vinput::process::CommandSpec spec;
+  spec.command = "sh";
+  spec.args = {"-c", "seq 1 20000"};
+  spec.timeout_ms = 5000;
+
+  const auto result = vinput::process::RunOnce(spec, {});
+
+  ExpectTrue(!result.launch_failed, "Launch should succeed");
+  ExpectTrue(!result.timed_out, "Large output must not time out");
+  ExpectTrue(result.exit_code == 0, "Exit code should be 0");
+
+  const auto line_count = static_cast<std::size_t>(
+      std::count(result.stdout_text.begin(), result.stdout_text.end(), '\n'));
+  ExpectTrue(line_count == 20000, "All lines must be captured, got " + std::to_string(line_count));
+}
+
+/**
+ * A child that closes every standard descriptor and keeps running must still be bounded by the
+ * deadline: closing the channels is not an exit, so the pump may not hand the caller an unbounded
+ * wait.
+ */
+void TestRunOnceTimesOutWhenChildClosesEveryDescriptor() {
+  vinput::process::CommandSpec spec;
+  spec.command = "sh";
+  spec.args = {"-c", "exec 0<&- 1>&- 2>&-; sleep 5"};
+  spec.timeout_ms = 200;
+
+  const auto start = std::chrono::steady_clock::now();
+  const auto result = vinput::process::RunOnce(spec, {});
+  const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
+                           std::chrono::steady_clock::now() - start)
+                           .count();
+
+  ExpectTrue(!result.launch_failed, "Launch should succeed");
+  ExpectTrue(result.timed_out, "Closed channels must not disable the deadline");
+  ExpectTrue(elapsed < 1500, "Deadline must still stop a running child (elapsed=" +
+                                 std::to_string(elapsed) + "ms)");
+}
+
 } // namespace
 
 int main() {
@@ -239,6 +419,12 @@ int main() {
   TestSpawnForMonitoring();
   TestRunCommandSilent();
   TestRunCommandCaptureStdout();
+  TestPumpIoForwardsChannelOutput();
+  TestPumpIoHonoursDeadlineWithoutExitProbe();
+  TestPumpIoWritesInputAndClosesHandle();
+  TestRunOnceFeedsStdin();
+  TestRunOnceDrainsLargeOutput();
+  TestRunOnceTimesOutWhenChildClosesEveryDescriptor();
   std::cout << "All test_process_utils passed!\n";
   return 0;
 }
