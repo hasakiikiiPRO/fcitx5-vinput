@@ -8,12 +8,10 @@
 #include <iostream>
 #include <span>
 #include <string>
-#include <string_view>
 #include <sys/types.h>
 #include <sys/wait.h>
 #include <thread>
 #include <unistd.h>
-#include <utility>
 
 #include "common/utils/process_utils.h"
 
@@ -28,23 +26,13 @@ void ExpectTrue(bool condition, const std::string& message) {
   }
 }
 
-// Collects everything a pump forwards, so a test can compare the full byte stream.
-class CollectSink final : public vinput::process::PumpSink {
-public:
-  void OnStdout(std::string_view chunk) override { out.append(chunk); }
-  void OnStderr(std::string_view chunk) override { err.append(chunk); }
-
-  std::string out;
-  std::string err;
-};
-
 void TestNormalExecution() {
   vinput::process::CommandSpec spec;
   spec.command = "sh";
   spec.args = {"-c", "echo hello_process_utils"};
   spec.timeout_ms = 2000;
 
-  const auto result = vinput::process::RunCommandWithInput(spec, {});
+  const auto result = vinput::process::Run(spec);
   ExpectTrue(!result.launch_failed, "Launch should succeed");
   ExpectTrue(!result.timed_out, "Command should not time out");
   ExpectTrue(result.exit_code == 0, "Exit code should be 0");
@@ -59,7 +47,7 @@ void TestCommandTimeout() {
   spec.timeout_ms = 100;
 
   const auto start = std::chrono::steady_clock::now();
-  const auto result = vinput::process::RunCommandWithInput(spec, {});
+  const auto result = vinput::process::Run(spec);
   const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
                            std::chrono::steady_clock::now() - start)
                            .count();
@@ -73,7 +61,7 @@ void TestCommandTimeout() {
 /**
  * Regression test for Issue #270:
  * Child process exits immediately, but a background grandchild / background process
- * holds the stdout/stderr pipe open. RunCommandWithInput must not hang or spin indefinitely.
+ * holds the stdout/stderr pipe open. Run must not hang or spin indefinitely.
  */
 void TestChildExitWithLeakedPipeDoesNotHang() {
   vinput::process::CommandSpec spec;
@@ -83,7 +71,7 @@ void TestChildExitWithLeakedPipeDoesNotHang() {
   spec.timeout_ms = 1000;
 
   const auto start = std::chrono::steady_clock::now();
-  const auto result = vinput::process::RunCommandWithInput(spec, {});
+  const auto result = vinput::process::Run(spec);
   const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
                            std::chrono::steady_clock::now() - start)
                            .count();
@@ -98,7 +86,7 @@ void TestChildExitWithLeakedPipeDoesNotHang() {
 /**
  * Regression test for Issue #270:
  * Command closes all fds (stdin, stdout, stderr) immediately and sleeps.
- * RunCommandWithInput must not busy-spin at 100% CPU when nfds == 0.
+ * Run must not busy-spin at 100% CPU when nfds == 0.
  */
 void TestClosedFdsDoesNotBusySpin() {
   vinput::process::CommandSpec spec;
@@ -107,7 +95,7 @@ void TestClosedFdsDoesNotBusySpin() {
   spec.timeout_ms = 1000;
 
   const auto start = std::chrono::steady_clock::now();
-  const auto result = vinput::process::RunCommandWithInput(spec, {});
+  const auto result = vinput::process::Run(spec);
   const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
                            std::chrono::steady_clock::now() - start)
                            .count();
@@ -140,7 +128,7 @@ void TestPipeCloexecBehavior() {
   spec.args = {"-c", "test -e /proc/self/fd/" + std::to_string(pipefd[0]) +
                          " || test -e /proc/self/fd/" + std::to_string(pipefd[1])};
   spec.timeout_ms = 1000;
-  const auto result = vinput::process::RunCommandWithInput(spec, {});
+  const auto result = vinput::process::Run(spec);
   ExpectTrue(!result.launch_failed, "Launch should succeed");
   // The child process does not have these fds, so test returns 1 (false).
   ExpectTrue(
@@ -196,159 +184,10 @@ void TestSpawnForMonitoring() {
   ExpectTrue(status == 0, "Child process should exit cleanly with status 0");
 }
 
-void TestRunCommandSilent() {
-  vinput::process::CommandSpec spec;
-  spec.command = "sh";
-  spec.args = {"-c", "exit 0"};
-  spec.timeout_ms = 1000;
-
-  int rc = -1;
-  ExpectTrue(vinput::process::RunCommandSilent(spec, &rc), "Silent command should succeed");
-  ExpectTrue(rc == 0, "Exit code should be 0");
-
-  spec.args = {"-c", "exit 42"};
-  rc = -1;
-  ExpectTrue(!vinput::process::RunCommandSilent(spec, &rc), "Non-zero exit should return false");
-  ExpectTrue(rc == 42, "Exit code should be 42");
-
-  spec.command = "";
-  ExpectTrue(!vinput::process::RunCommandSilent(spec, &rc), "Empty command should fail");
-
-  spec.command = "sh";
-  spec.args = {"-c", "sleep 5"};
-  spec.timeout_ms = 50;
-  ExpectTrue(!vinput::process::RunCommandSilent(spec, &rc), "Timed out command should fail");
-}
-
-void TestRunCommandCaptureStdout() {
-  vinput::process::CommandSpec spec;
-  spec.command = "sh";
-  spec.args = {"-c", "echo 'Volume: 0.75'"};
-  spec.timeout_ms = 1000;
-
-  auto stdout_res = vinput::process::RunCommandCaptureStdout(spec);
-  ExpectTrue(stdout_res.has_value(), "Capture stdout should succeed");
-  ExpectTrue(*stdout_res == "Volume: 0.75\n", "Captured stdout mismatch: " + *stdout_res);
-
-  spec.args = {"-c", "echo 'error message' >&2; exit 2"};
-  auto fail_res = vinput::process::RunCommandCaptureStdout(spec);
-  ExpectTrue(!fail_res.has_value(), "Failure command should return unexpected");
-
-  spec.command = "sh";
-  spec.args = {"-c", "sleep 5"};
-  spec.timeout_ms = 50;
-  auto timeout_res = vinput::process::RunCommandCaptureStdout(spec);
-  ExpectTrue(!timeout_res.has_value(), "Timed out command should return unexpected");
-}
-
 /**
- * PumpIo must forward everything a channel delivers and report the channel as closed once the
- * write end is gone. No child process is involved: the pump owns no lifecycle.
+ * Run must deliver stdin and then close it, which is what makes a filtering child exit.
  */
-void TestPumpIoForwardsChannelOutput() {
-  int pipefd[2] = {-1, -1};
-  ExpectTrue(vinput::process::CreateCloexecPipe(pipefd), "CreateCloexecPipe should succeed");
-
-  const std::string payload = "first chunk\nsecond chunk\n";
-  const ssize_t written = write(pipefd[1], payload.data(), payload.size());
-  ExpectTrue(std::cmp_equal(written, payload.size()), "Payload should fit the pipe buffer");
-  close(pipefd[1]);
-
-  CollectSink sink;
-  vinput::process::PumpChild child;
-  child.channels.stdout_fd = pipefd[0];
-  child.exited = [](int* exit_code) {
-    if (exit_code != nullptr) {
-      *exit_code = 0;
-    }
-    return true;
-  };
-
-  vinput::process::PumpOptions options;
-  options.deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
-  const auto result = vinput::process::PumpIo(child, {}, options, sink);
-
-  ExpectTrue(!result.timed_out, "Draining a closed channel must not time out");
-  ExpectTrue(result.stdout_closed, "Closed write end must be reported");
-  ExpectTrue(sink.out == payload, "Sink should receive the payload unchanged: " + sink.out);
-  close(pipefd[0]);
-}
-
-/**
- * A pump with no exit probe and a channel that never closes must still return when its deadline
- * expires, so a hung child can never block the caller forever.
- */
-void TestPumpIoHonoursDeadlineWithoutExitProbe() {
-  int pipefd[2] = {-1, -1};
-  ExpectTrue(vinput::process::CreateCloexecPipe(pipefd), "CreateCloexecPipe should succeed");
-
-  CollectSink sink;
-  vinput::process::PumpChild child;
-  child.channels.stdout_fd = pipefd[0];
-
-  vinput::process::PumpOptions options;
-  options.poll_slice = std::chrono::milliseconds(10);
-  options.deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(80);
-
-  const auto start = std::chrono::steady_clock::now();
-  const auto result = vinput::process::PumpIo(child, {}, options, sink);
-  const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
-                           std::chrono::steady_clock::now() - start)
-                           .count();
-
-  ExpectTrue(result.timed_out, "Expired deadline must be reported as a timeout");
-  ExpectTrue(!result.child_exited, "No probe means no confirmed exit");
-  ExpectTrue(elapsed < 500,
-             "Deadline must bound the pump (elapsed=" + std::to_string(elapsed) + "ms)");
-
-  close(pipefd[0]);
-  close(pipefd[1]);
-}
-
-/**
- * PumpIo delivers the input span into the child's stdin channel and invokes the caller's close hook
- * exactly once, so the owner can release its own handle.
- */
-void TestPumpIoWritesInputAndClosesHandle() {
-  int pipefd[2] = {-1, -1};
-  ExpectTrue(vinput::process::CreateCloexecPipe(pipefd), "CreateCloexecPipe should succeed");
-
-  const std::string payload = "payload-for-child";
-  int close_calls = 0;
-  CollectSink sink;
-
-  vinput::process::PumpChild child;
-  child.channels.input_fd = pipefd[1];
-  child.close_input = [&close_calls, &pipefd]() {
-    ++close_calls;
-    close(pipefd[1]);
-  };
-
-  vinput::process::PumpOptions options;
-  options.deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
-
-  const auto bytes = std::as_bytes(std::span(payload.data(), payload.size()));
-  const auto result = vinput::process::PumpIo(child, bytes, options, sink);
-
-  ExpectTrue(!result.timed_out, "Writing a small payload must not time out");
-  ExpectTrue(!result.input_incomplete, "Small payload should be fully accepted");
-  ExpectTrue(close_calls == 1,
-             "Close hook must run exactly once, got " + std::to_string(close_calls));
-
-  std::string received;
-  std::array<char, 64> buffer{};
-  const ssize_t n = read(pipefd[0], buffer.data(), buffer.size());
-  if (n > 0) {
-    received.append(buffer.data(), static_cast<std::size_t>(n));
-  }
-  ExpectTrue(received == payload, "Child side should observe the payload: " + received);
-  close(pipefd[0]);
-}
-
-/**
- * RunOnce must deliver stdin and then close it, which is what makes a filtering child exit.
- */
-void TestRunOnceFeedsStdin() {
+void TestRunFeedsStdin() {
   vinput::process::CommandSpec spec;
   spec.command = "sh";
   spec.args = {"-c", "cat"};
@@ -356,7 +195,7 @@ void TestRunOnceFeedsStdin() {
 
   const std::string payload = "dictation text\n";
   const auto bytes = std::as_bytes(std::span(payload.data(), payload.size()));
-  const auto result = vinput::process::RunOnce(spec, bytes);
+  const auto result = vinput::process::Run(spec, bytes);
 
   ExpectTrue(!result.launch_failed, "Launch should succeed");
   ExpectTrue(!result.timed_out, "Feeding stdin should not time out");
@@ -367,13 +206,13 @@ void TestRunOnceFeedsStdin() {
 /**
  * A child that writes more than one read budget must not lose or truncate output.
  */
-void TestRunOnceDrainsLargeOutput() {
+void TestRunDrainsLargeOutput() {
   vinput::process::CommandSpec spec;
   spec.command = "sh";
   spec.args = {"-c", "seq 1 20000"};
   spec.timeout_ms = 5000;
 
-  const auto result = vinput::process::RunOnce(spec, {});
+  const auto result = vinput::process::Run(spec);
 
   ExpectTrue(!result.launch_failed, "Launch should succeed");
   ExpectTrue(!result.timed_out, "Large output must not time out");
@@ -385,18 +224,45 @@ void TestRunOnceDrainsLargeOutput() {
 }
 
 /**
- * A child that closes every standard descriptor and keeps running must still be bounded by the
- * deadline: closing the channels is not an exit, so the pump may not hand the caller an unbounded
- * wait.
+ * Both streams must be captured completely when both flood at once. Each writer exceeds a pipe
+ * buffer, so the child can only exit if neither channel is held back behind the other one; a
+ * starved channel would block the child in write() and turn this run into a timeout with truncated
+ * output.
  */
-void TestRunOnceTimesOutWhenChildClosesEveryDescriptor() {
+void TestRunCapturesBothStreamsWhenBothFlood() {
+  constexpr std::size_t kLineCount = 20000;
+
+  vinput::process::CommandSpec spec;
+  spec.command = "sh";
+  spec.args = {"-c", "seq 1 20000 & seq 1 20000 >&2; wait"};
+  spec.timeout_ms = 5000;
+
+  const auto result = vinput::process::Run(spec);
+
+  ExpectTrue(!result.launch_failed, "Launch should succeed");
+  ExpectTrue(!result.timed_out, "Both streams must be drained without reaching the deadline");
+  ExpectTrue(result.exit_code == 0, "Exit code should be 0");
+
+  const auto out_lines = static_cast<std::size_t>(
+      std::count(result.stdout_text.begin(), result.stdout_text.end(), '\n'));
+  const auto err_lines = static_cast<std::size_t>(
+      std::count(result.stderr_text.begin(), result.stderr_text.end(), '\n'));
+  ExpectTrue(out_lines == kLineCount, "stdout must be complete, got " + std::to_string(out_lines));
+  ExpectTrue(err_lines == kLineCount, "stderr must be complete, got " + std::to_string(err_lines));
+}
+
+/**
+ * A child that closes every standard descriptor and keeps running must still be bounded by the
+ * deadline: closing the channels is not an exit, so Run may not perform an unbounded wait.
+ */
+void TestRunTimesOutWhenChildClosesEveryDescriptor() {
   vinput::process::CommandSpec spec;
   spec.command = "sh";
   spec.args = {"-c", "exec 0<&- 1>&- 2>&-; sleep 5"};
   spec.timeout_ms = 200;
 
   const auto start = std::chrono::steady_clock::now();
-  const auto result = vinput::process::RunOnce(spec, {});
+  const auto result = vinput::process::Run(spec);
   const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
                            std::chrono::steady_clock::now() - start)
                            .count();
@@ -417,14 +283,10 @@ int main() {
   TestChildExitWithLeakedPipeDoesNotHang();
   TestClosedFdsDoesNotBusySpin();
   TestSpawnForMonitoring();
-  TestRunCommandSilent();
-  TestRunCommandCaptureStdout();
-  TestPumpIoForwardsChannelOutput();
-  TestPumpIoHonoursDeadlineWithoutExitProbe();
-  TestPumpIoWritesInputAndClosesHandle();
-  TestRunOnceFeedsStdin();
-  TestRunOnceDrainsLargeOutput();
-  TestRunOnceTimesOutWhenChildClosesEveryDescriptor();
+  TestRunFeedsStdin();
+  TestRunDrainsLargeOutput();
+  TestRunCapturesBothStreamsWhenBothFlood();
+  TestRunTimesOutWhenChildClosesEveryDescriptor();
   std::cout << "All test_process_utils passed!\n";
   return 0;
 }
