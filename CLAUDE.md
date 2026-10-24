@@ -68,3 +68,19 @@ Consult detailed manuals on demand when entering specific operational workflows:
 | **Audio & Daemon Debugging** | [.agents/skills/vinput-dev/references/audio-debugging.md](.agents/skills/vinput-dev/references/audio-debugging.md) | Troubleshooting PipeWire audio capture, XRuns, D-Bus service crashes, reading systemd logs. |
 | **Dependency Governance** | [.agents/skills/vinput-dev/references/dependency-spec.md](.agents/skills/vinput-dev/references/dependency-spec.md) | Adding/upgrading 3rd-party libraries, `flake.nix` packages, `3rdparty/` vendoring, CMake `SYSTEM INTERFACE` isolation, and license notices. |
 | **Master Development Skill** | [.agents/skills/vinput-dev/SKILL.md](.agents/skills/vinput-dev/SKILL.md) | Master development manual, Pre-PR code health checks, and cross-repo guides. |
+
+---
+
+## 4. Agent skills
+
+### Issue tracker
+
+GitHub issues in `xifan2333/fcitx5-vinput`, driven by the `gh` CLI. See `docs/agents/issue-tracker.md`.
+
+### Triage labels
+
+The five canonical roles (`needs-triage`, `needs-info`, `ready-for-agent`, `ready-for-human`, `wontfix`). See `docs/agents/triage-labels.md`.
+
+### Domain docs
+
+Single-context: `GLOSSARY.md` at the repo root plus `docs/adr/`. Read the glossary before naming domain concepts, and check ADRs before contradicting a settled decision. See `docs/agents/domain.md`.
