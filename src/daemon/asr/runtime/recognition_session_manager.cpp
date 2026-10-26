@@ -71,6 +71,12 @@ public:
     }
   }
 
+  void Interrupt() noexcept override {
+    if (session_) {
+      session_->Interrupt();
+    }
+  }
+
   std::vector<RecognitionEvent> PollEvents() override {
     if (!session_) {
       return {};

@@ -53,6 +53,7 @@ public:
   virtual bool PushAudio(std::span<const float> samples, std::string* error);
   virtual bool Finish(std::string* error) = 0;
   virtual void Cancel() = 0;
+  virtual void Interrupt() noexcept {}
   virtual std::vector<RecognitionEvent> PollEvents() = 0;
 };
 

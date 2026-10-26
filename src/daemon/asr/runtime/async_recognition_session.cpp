@@ -105,6 +105,13 @@ void AsyncRecognitionSession::Cancel() {
     queued_samples_ = 0;
   }
   wake_.notify_one();
+  if (backend_) {
+    backend_->Interrupt();
+  }
+}
+
+void AsyncRecognitionSession::Interrupt() noexcept {
+  Cancel();
 }
 
 std::vector<RecognitionEvent> AsyncRecognitionSession::PollEvents() {
