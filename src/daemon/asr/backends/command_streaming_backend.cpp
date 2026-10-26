@@ -17,6 +17,7 @@
 
 #include "common/config/core_config_types.h"
 #include "common/json/json_access.h"
+#include "common/notify/notification_bridge.h"
 #include "common/utils/process_session.h"
 #include "common/utils/process_utils.h"
 #include "common/utils/string_utils.h"
@@ -52,8 +53,10 @@ int RemainingMs(Clock::time_point deadline, int fallback_ms) {
 
 class CommandStreamingSession : public RecognitionSession {
 public:
-  CommandStreamingSession(CommandAsrProvider provider, std::string provider_id)
-      : provider_(std::move(provider)), provider_id_(std::move(provider_id)) {}
+  CommandStreamingSession(CommandAsrProvider provider, std::string provider_id,
+                          vinput::notify::NotificationBridge* notification_bridge = nullptr)
+      : provider_(std::move(provider)), provider_id_(std::move(provider_id)),
+        notification_bridge_(notification_bridge), source_id_(provider_id_) {}
 
   CommandStreamingSession(const CommandStreamingSession&) = delete;
   CommandStreamingSession& operator=(const CommandStreamingSession&) = delete;
@@ -343,6 +346,9 @@ private:
   }
 
   void ConsumeStderrChunk(std::span<const std::byte> bytes) {
+    if (notification_bridge_ != nullptr) {
+      notification_bridge_->FeedStderr(source_id_, bytes);
+    }
     const auto* data_ptr = reinterpret_cast<const char*>(bytes.data());
     stderr_buffer_.append(data_ptr, bytes.size());
     vinput::process::DrainLinesFromBuffer(
@@ -357,6 +363,9 @@ private:
   }
 
   void FlushStderr() {
+    if (notification_bridge_ != nullptr) {
+      notification_bridge_->Flush(source_id_);
+    }
     vinput::process::DrainLinesFromBuffer(
         stderr_buffer_,
         [&](std::string_view raw_line) {
@@ -442,6 +451,11 @@ private:
     }
     terminated_ = true;
 
+    if (notification_bridge_ != nullptr) {
+      notification_bridge_->Flush(source_id_);
+      notification_bridge_->RetireSource(source_id_);
+    }
+
     if (session_.has_value()) {
       session_->Cancel();
       session_.reset();
@@ -450,6 +464,8 @@ private:
 
   CommandAsrProvider provider_;
   std::string provider_id_;
+  vinput::notify::NotificationBridge* notification_bridge_ = nullptr;
+  std::string source_id_;
   Clock::time_point deadline_ = Clock::time_point::max();
   std::optional<vinput::process::ProcessSession> session_;
   bool started_ = false;
@@ -473,7 +489,10 @@ private:
 
 class CommandStreamingBackend : public AsrBackend {
 public:
-  explicit CommandStreamingBackend(CommandAsrProvider provider) : provider_(std::move(provider)) {}
+  explicit CommandStreamingBackend(
+      CommandAsrProvider provider,
+      vinput::notify::NotificationBridge* notification_bridge = nullptr)
+      : provider_(std::move(provider)), notification_bridge_(notification_bridge) {}
 
   [[nodiscard]] BackendDescriptor Describe() const override {
     BackendDescriptor descriptor;
@@ -497,17 +516,19 @@ public:
     if (error != nullptr) {
       error->clear();
     }
-    return std::make_unique<CommandStreamingSession>(provider_, provider_.id);
+    return std::make_unique<CommandStreamingSession>(provider_, provider_.id, notification_bridge_);
   }
 
 private:
   CommandAsrProvider provider_;
+  vinput::notify::NotificationBridge* notification_bridge_ = nullptr;
 };
 
 } // namespace
 
-std::unique_ptr<AsrBackend> CreateCommandStreamingBackend(const CommandAsrProvider& provider,
-                                                          std::string* error) {
+std::unique_ptr<AsrBackend>
+CreateCommandStreamingBackend(const CommandAsrProvider& provider, std::string* error,
+                              vinput::notify::NotificationBridge* notification_bridge) {
   if (provider.command.empty()) {
     if (error != nullptr) {
       *error = "Command ASR provider has empty command.";
@@ -517,7 +538,7 @@ std::unique_ptr<AsrBackend> CreateCommandStreamingBackend(const CommandAsrProvid
   if (error != nullptr) {
     error->clear();
   }
-  return std::make_unique<CommandStreamingBackend>(provider);
+  return std::make_unique<CommandStreamingBackend>(provider, notification_bridge);
 }
 
 } // namespace vinput::daemon::asr
