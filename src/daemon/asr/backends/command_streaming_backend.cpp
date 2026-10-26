@@ -1,13 +1,16 @@
 #include "daemon/asr/backends/command_streaming_backend.h"
 
+#include <atomic>
 #include <base64.hpp>
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
+#include <format>
 #include <glaze/core/common.hpp>
 #include <glaze/json/json_t.hpp>
 #include <glaze/json/read.hpp>
 #include <memory>
+#include <mutex>
 #include <optional>
 #include <span>
 #include <string>
@@ -52,12 +55,17 @@ int RemainingMs(Clock::time_point deadline, int fallback_ms) {
   return vinput::time::RemainingTimeoutMs(deadline, fallback_ms, Clock::now());
 }
 
+std::string MakeSessionSourceId(std::string_view provider_id) {
+  static std::atomic<std::uint64_t> s_session_counter{0};
+  return std::format("{}-{}", provider_id, ++s_session_counter);
+}
+
 class CommandStreamingSession : public RecognitionSession {
 public:
   CommandStreamingSession(CommandAsrProvider provider, std::string provider_id,
                           vinput::notify::NotificationBridge* notification_bridge = nullptr)
       : provider_(std::move(provider)), provider_id_(std::move(provider_id)),
-        notification_bridge_(notification_bridge), source_id_(provider_id_) {}
+        notification_bridge_(notification_bridge), source_id_(MakeSessionSourceId(provider_id_)) {}
 
   CommandStreamingSession(const CommandStreamingSession&) = delete;
   CommandStreamingSession& operator=(const CommandStreamingSession&) = delete;
@@ -167,6 +175,13 @@ public:
     QueueCompleted();
     Terminate();
 
+    if (cancelled_ || killed_by_us_ || interrupted_.load(std::memory_order_acquire)) {
+      if (error != nullptr) {
+        *error = "Recognition session was interrupted or cancelled.";
+      }
+      return false;
+    }
+
     if (error != nullptr) {
       if (saw_error_ && !events_.empty()) {
         for (const auto& event : events_) {
@@ -187,6 +202,7 @@ public:
   void Cancel() override {
     if (!cancelled_) {
       cancelled_ = true;
+      const std::scoped_lock lock(session_mutex_);
       if (started_ && session_.has_value()) {
         SendControlEvent("cancel", nullptr);
         session_->CloseStdin();
@@ -197,6 +213,8 @@ public:
   }
 
   void Interrupt() noexcept override {
+    interrupted_.store(true, std::memory_order_release);
+    const std::scoped_lock lock(session_mutex_);
     if (session_.has_value()) {
       session_->Cancel();
     }
@@ -210,7 +228,7 @@ public:
 
 private:
   bool EnsureStarted(std::string* error) {
-    if (cancelled_) {
+    if (cancelled_ || interrupted_.load(std::memory_order_acquire)) {
       if (error != nullptr) {
         *error = "Recognition session already cancelled.";
       }
@@ -242,7 +260,10 @@ private:
       return false;
     }
 
-    session_.emplace(std::move(*session_res));
+    {
+      const std::scoped_lock lock(session_mutex_);
+      session_.emplace(std::move(*session_res));
+    }
     started_ = true;
     return true;
   }
@@ -273,17 +294,23 @@ private:
   }
 
   bool SendJsonLine(const glz::json_t& payload, std::string* error) {
-    if (!session_.has_value()) {
-      if (error != nullptr) {
-        *error = "provider session is not started.";
-      }
-      return false;
-    }
-
     std::string line = vinput::json::ToText(payload);
     line.push_back('\n');
     const auto bytes = std::as_bytes(std::span(line));
-    if (!session_->PushStdin(bytes)) {
+
+    bool pushed = false;
+    {
+      const std::scoped_lock lock(session_mutex_);
+      if (!session_.has_value()) {
+        if (error != nullptr) {
+          *error = "provider session is not started.";
+        }
+        return false;
+      }
+      pushed = session_->PushStdin(bytes);
+    }
+
+    if (!pushed) {
       DrainEvents(std::chrono::milliseconds(0), nullptr);
       if (error != nullptr) {
         *error =
@@ -312,8 +339,10 @@ private:
       first = false;
       switch (event.kind) {
       case vinput::process::ChildEventKind::StdoutChunk: {
-        const auto* data_ptr = reinterpret_cast<const char*>(event.data.data());
-        stdout_buffer_.append(data_ptr, event.data.size());
+        stdout_buffer_.reserve(stdout_buffer_.size() + event.data.size());
+        for (const auto b : event.data) {
+          stdout_buffer_.push_back(static_cast<char>(b));
+        }
         ConsumeStdoutLines(error);
         if (error != nullptr && !error->empty()) {
           return false;
@@ -359,6 +388,7 @@ private:
           const std::string line(vinput::str::Trim(raw_line));
           if (!line.empty()) {
             stderr_tail_ = line;
+            VLOG_DEBUG("streaming ASR provider '{}' stderr: {}", provider_id_, line);
           }
         },
         flush_tail);
@@ -368,8 +398,10 @@ private:
     if (notification_bridge_ != nullptr) {
       notification_bridge_->FeedStderr(source_id_, bytes);
     }
-    const auto* data_ptr = reinterpret_cast<const char*>(bytes.data());
-    stderr_buffer_.append(data_ptr, bytes.size());
+    stderr_buffer_.reserve(stderr_buffer_.size() + bytes.size());
+    for (const auto b : bytes) {
+      stderr_buffer_.push_back(static_cast<char>(b));
+    }
     DrainStderrLines(false);
   }
 
@@ -459,6 +491,7 @@ private:
       notification_bridge_->RetireSource(source_id_);
     }
 
+    const std::scoped_lock lock(session_mutex_);
     if (session_.has_value()) {
       session_->Cancel();
       session_.reset();
@@ -470,7 +503,9 @@ private:
   vinput::notify::NotificationBridge* notification_bridge_ = nullptr;
   std::string source_id_;
   Clock::time_point deadline_ = Clock::time_point::max();
+  mutable std::mutex session_mutex_;
   std::optional<vinput::process::ProcessSession> session_;
+  std::atomic<bool> interrupted_{false};
   bool started_ = false;
   bool finished_ = false;
   bool cancelled_ = false;
