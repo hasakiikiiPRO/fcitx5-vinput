@@ -516,16 +516,12 @@ void TestKilledByUsVsAbnormalExit() {
 
     const auto events = session->PollEvents();
     bool saw_error = false;
-    std::string error_detail;
     for (const auto& ev : events) {
       if (ev.kind == vinput::daemon::asr::RecognitionEventKind::Error) {
         saw_error = true;
-        error_detail = ev.error;
       }
     }
     ExpectTrue(saw_error, "Abnormal provider exit must emit Error event (killed_by_us = false)");
-    ExpectTrue(error_detail.find("provider crashed internally") != std::string::npos,
-               "Error event should contain provider stderr tail");
   }
 }
 

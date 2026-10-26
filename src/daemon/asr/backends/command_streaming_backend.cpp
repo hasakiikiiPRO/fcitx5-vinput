@@ -39,14 +39,6 @@ constexpr int kPollSliceMs = 50;
 constexpr int kAwaitFinalTimeoutMs = 10000;
 constexpr int kFinalGraceMs = 200;
 
-std::string FormatProviderError(std::string detail, std::string_view fallback) {
-  detail = std::string(vinput::str::Trim(detail));
-  if (!detail.empty()) {
-    return detail;
-  }
-  return std::string(fallback);
-}
-
 bool HasTimedOut(Clock::time_point deadline) {
   return Clock::now() >= deadline;
 }
@@ -144,7 +136,7 @@ public:
         return false;
       }
       if (HasTimedOut(deadline_)) {
-        QueueError(FormatProviderError(std::move(stderr_tail_), "timed out."));
+        QueueError("Streaming ASR provider timed out.");
         QueueCompleted();
         Terminate();
         if (error != nullptr) {
@@ -170,7 +162,7 @@ public:
     DrainEvents(std::chrono::milliseconds(0), nullptr);
 
     if (!saw_final_text_ && !saw_error_ && !cancelled_ && !killed_by_us_) {
-      QueueError(FormatProviderError(std::move(stderr_tail_), "returned no text."));
+      QueueError("Streaming ASR provider returned no text.");
     }
     QueueCompleted();
     Terminate();
@@ -313,8 +305,7 @@ private:
     if (!pushed) {
       DrainEvents(std::chrono::milliseconds(0), nullptr);
       if (error != nullptr) {
-        *error =
-            FormatProviderError(std::move(stderr_tail_), "provider closed stdin or buffer full.");
+        *error = "Provider closed stdin or input buffer is full.";
       }
       return false;
     }
@@ -350,7 +341,9 @@ private:
         break;
       }
       case vinput::process::ChildEventKind::StderrChunk: {
-        ConsumeStderrChunk(event.data);
+        if (notification_bridge_ != nullptr) {
+          notification_bridge_->FeedStderr(source_id_, event.data);
+        }
         break;
       }
       case vinput::process::ChildEventKind::Cancelled: {
@@ -361,14 +354,16 @@ private:
         child_exited_ = true;
         exit_code_ = event.exit_code;
         killed_by_us_ = event.killed_by_us;
-        FlushStderr();
+        if (notification_bridge_ != nullptr) {
+          notification_bridge_->Flush(source_id_);
+        }
         if (killed_by_us_) {
           VLOG_DEBUG("streaming ASR provider '{}' terminated by session cancellation",
                      provider_id_);
         } else if (exit_code_ != 0 && !saw_error_ && !saw_final_text_) {
           VLOG_WARN("streaming ASR provider '{}' exited abnormally with code {}", provider_id_,
                     exit_code_);
-          QueueError(FormatProviderError(std::move(stderr_tail_), "failed."));
+          QueueError("Streaming ASR provider exited abnormally.");
         }
         break;
       }
@@ -379,37 +374,6 @@ private:
       error->clear();
     }
     return true;
-  }
-
-  void DrainStderrLines(bool flush_tail) {
-    vinput::process::DrainLinesFromBuffer(
-        stderr_buffer_,
-        [&](std::string_view raw_line) {
-          const std::string line(vinput::str::Trim(raw_line));
-          if (!line.empty()) {
-            stderr_tail_ = line;
-            VLOG_DEBUG("streaming ASR provider '{}' stderr: {}", provider_id_, line);
-          }
-        },
-        flush_tail);
-  }
-
-  void ConsumeStderrChunk(std::span<const std::byte> bytes) {
-    if (notification_bridge_ != nullptr) {
-      notification_bridge_->FeedStderr(source_id_, bytes);
-    }
-    stderr_buffer_.reserve(stderr_buffer_.size() + bytes.size());
-    for (const auto b : bytes) {
-      stderr_buffer_.push_back(static_cast<char>(b));
-    }
-    DrainStderrLines(false);
-  }
-
-  void FlushStderr() {
-    if (notification_bridge_ != nullptr) {
-      notification_bridge_->Flush(source_id_);
-    }
-    DrainStderrLines(true);
   }
 
   void ConsumeStdoutLines(std::string* error) {
@@ -518,8 +482,6 @@ private:
   bool killed_by_us_ = false;
   int exit_code_ = -1;
   std::string stdout_buffer_;
-  std::string stderr_buffer_;
-  std::string stderr_tail_;
   std::string last_partial_text_;
   std::vector<std::byte> pending_chunk_;
   std::vector<RecognitionEvent> events_;
