@@ -1,14 +1,16 @@
 #pragma once
 
+#include <cstdint>
 #include <functional>
 #include <mutex>
 #include <string>
-#include <sys/eventfd.h>
 #include <systemd/sd-bus.h>
+#include <utility>
 #include <vector>
 
 #include "common/dbus/dbus_interface.h"
 #include "common/dbus/error_info.h"
+#include "common/notify/notification_bridge.h"
 
 class DbusService {
 public:
@@ -33,16 +35,21 @@ public:
 
   DbusService();
   ~DbusService();
+  DbusService(const DbusService&) = delete;
+  DbusService& operator=(const DbusService&) = delete;
+  DbusService(DbusService&&) = delete;
+  DbusService& operator=(DbusService&&) = delete;
 
   bool Start(std::string* error = nullptr);
-  int GetFd() const;
-  int GetNotifyFd() const;
+  [[nodiscard]] int GetFd() const;
+  [[nodiscard]] int GetNotifyFd() const;
   bool ProcessOnce();
   void FlushEmitQueue(); // main thread only
   void EmitRecognitionResult(const std::string& text);
   void EmitRecognitionPartial(const std::string& text);
   void EmitStatusChanged(const std::string& status);
   void EmitNotification(const vinput::dbus::ErrorInfo& notification);
+  void EmitDesktopNotification(const vinput::notify::Notification& notification);
 
   void SetStartHandler(std::function<MethodResult()> handler);
   void SetStartCommandHandler(std::function<MethodResult(const std::string&)> handler);
@@ -70,10 +77,11 @@ private:
   int notify_fd_ = -1;
 
   struct PendingEmit {
-    enum class Type { Result, Partial, Status, Notification };
-    Type type;
+    enum class Type : std::uint8_t { Result, Partial, Status, Notification, DesktopNotification };
+    Type type = Type::Result;
     std::string payload;
     vinput::dbus::ErrorInfo notification;
+    vinput::notify::Notification desktop_notification;
   };
   std::mutex emit_mutex_;
   std::vector<PendingEmit> emit_queue_;
