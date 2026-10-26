@@ -18,6 +18,7 @@
 #include "common/config/core_config_types.h"
 #include "common/json/json_access.h"
 #include "common/notify/notification_bridge.h"
+#include "common/utils/debug_log.h"
 #include "common/utils/process_session.h"
 #include "common/utils/process_utils.h"
 #include "common/utils/string_utils.h"
@@ -324,6 +325,7 @@ private:
         break;
       }
       case vinput::process::ChildEventKind::Cancelled: {
+        killed_by_us_ = true;
         break;
       }
       case vinput::process::ChildEventKind::Exited: {
@@ -331,7 +333,12 @@ private:
         exit_code_ = event.exit_code;
         killed_by_us_ = event.killed_by_us;
         FlushStderr();
-        if (!killed_by_us_ && exit_code_ != 0 && !saw_error_ && !saw_final_text_) {
+        if (killed_by_us_) {
+          VLOG_DEBUG("streaming ASR provider '{}' terminated by session cancellation",
+                     provider_id_);
+        } else if (exit_code_ != 0 && !saw_error_ && !saw_final_text_) {
+          VLOG_WARN("streaming ASR provider '{}' exited abnormally with code {}", provider_id_,
+                    exit_code_);
           QueueError(FormatProviderError(std::move(stderr_tail_), "failed."));
         }
         break;
