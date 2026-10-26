@@ -316,7 +316,13 @@ void TestStalledProviderWriteIsBounded() {
   ExpectTrue(child_pid > 0, "stalled provider did not start");
   const auto started = std::chrono::steady_clock::now();
   alarm(6);
-  const bool ok = session->PushAudio(std::span<const int16_t>{}, &error);
+  bool ok = true;
+  for (int i = 0; i < 70; ++i) {
+    ok = session->PushAudio(long_chunk, &error);
+    if (!ok) {
+      break;
+    }
+  }
   const auto elapsed = std::chrono::steady_clock::now() - started;
   ExpectTrue(!ok && !error.empty(), "a filled provider pipe must eventually report failure");
   ExpectTrue(elapsed < std::chrono::seconds(2), "outbound write must respect its timeout");
