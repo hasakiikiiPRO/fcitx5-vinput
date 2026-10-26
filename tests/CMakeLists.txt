@@ -56,3 +56,17 @@ add_test(NAME modifier_key_tests COMMAND modifier_key_tests)
 set_tests_properties(modifier_key_tests PROPERTIES
     ENVIRONMENT "XDG_CONFIG_HOME=/tmp/vinput_test_cfg"
 )
+
+add_executable(waveform_tests waveform_tests.cpp)
+
+target_include_directories(waveform_tests PRIVATE
+    ${CMAKE_SOURCE_DIR}/src
+    ${CMAKE_SOURCE_DIR}/src/addon
+)
+
+target_link_libraries(waveform_tests PRIVATE
+    Fcitx5::Core
+    Fcitx5::Utils
+)
+
+add_test(NAME waveform_tests COMMAND waveform_tests)

@@ -19,8 +19,8 @@ msgstr ""
 msgid "... Starting ..."
 msgstr "... 正在启动 ..."
 
-msgid "... Recording ..."
-msgstr "... 正在录音 ..."
+msgid "● Recording "
+msgstr "● 正在录音 "
 
 msgid "... Commanding ..."
 msgstr "... 正在命令 ..."

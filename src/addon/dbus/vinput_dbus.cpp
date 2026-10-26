@@ -5,10 +5,12 @@
 #include <cstdio>
 #include <fcitx-utils/dbus/matchrule.h>
 #include <fcitx-utils/dbus/message.h>
+#include <fcitx-utils/utf8.h>
 #include <fcitx/inputcontext.h>
 #include <fcitx/inputpanel.h>
 #include <optional>
 #include <string>
+#include <string_view>
 #include <tuple>
 
 #include "common/asr/recognition_result.h"
@@ -23,6 +25,7 @@
 #include "common/utils/string_utils.h"
 
 #include "core/vinput.h"
+#include "core/waveform.h"
 #include "notifications_public.h"
 
 using namespace vinput::dbus;
@@ -960,18 +963,11 @@ void VinputEngine::handleRecognitionPartial(const std::string& transcript_text) 
 }
 
 std::string VinputEngine::RenderWaveformText() const {
-  static constexpr char kBlocks[] = " ▁▂▃▄▅▆▇█";
-  static constexpr std::size_t kBlockCount = sizeof(kBlocks) - 2;
-  std::string wave;
-  wave.reserve(wave_bars_.size());
-  for (std::uint8_t bar : wave_bars_) {
-    wave.push_back(kBlocks[std::min<std::size_t>(bar, kBlockCount)]);
-  }
-  return wave;
+  return vinput::addon::RenderWaveformBars(wave_bars_);
 }
 
 std::string VinputEngine::RecordingDisplayText() const {
-  return std::string(_("● 正在录音 ")) + RenderWaveformText();
+  return std::string(_("● Recording ")) + RenderWaveformText();
 }
 
 void VinputEngine::refreshRecordingWaveform() {
@@ -982,8 +978,10 @@ void VinputEngine::refreshRecordingWaveform() {
   if (!ic) {
     return;
   }
-  updateVoicePresentation(ic, ComposeLivePreedit(session_->transcript_text, RenderWaveformText(),
-                                                 max_streaming_display_width_));
+  updateVoicePresentation(
+      ic, ComposeLivePreedit(session_->transcript_text,
+                             session_->command_mode ? CommandingPreeditText() : RecordingDisplayText(),
+                             max_streaming_display_width_));
 }
 
 void VinputEngine::onAudioLevel(fcitx::dbus::Message& msg) {
@@ -993,10 +991,10 @@ void VinputEngine::onAudioLevel(fcitx::dbus::Message& msg) {
     return;
   }
   wave_level_ = std::clamp(static_cast<float>(level), 0.0F, 1.0F);
-  constexpr std::size_t kBarCount = 12;
-  const auto bar = static_cast<std::uint8_t>(std::lround(wave_level_ * 8.0F));
-  if (wave_bars_.size() != kBarCount) {
-    wave_bars_.assign(kBarCount, 0);
+  const auto bar = static_cast<std::uint8_t>(
+      std::lround(wave_level_ * static_cast<float>(vinput::addon::kWaveformMaxBar)));
+  if (wave_bars_.size() != vinput::addon::kWaveformBarCount) {
+    wave_bars_.assign(vinput::addon::kWaveformBarCount, 0);
   } else {
     std::rotate(wave_bars_.begin(), wave_bars_.begin() + 1, wave_bars_.end());
   }
@@ -1108,10 +1106,17 @@ void VinputEngine::updateVoicePresentation(fcitx::InputContext* ic, const std::s
   if (!ic)
     return;
   dismissMenusForVoiceActivity();
+  // fcitx::Text::append throws on invalid UTF-8, and an escaping exception
+  // aborts the whole input method. Transcription text comes from several
+  // backends, so never hand unvalidated bytes to the input panel.
   fcitx::Text preedit;
-  preedit.append(preedit_text);
+  if (fcitx::utf8::validate(preedit_text)) {
+    preedit.append(preedit_text);
+  }
   fcitx::Text aux_down;
-  aux_down.append(aux_down_text);
+  if (fcitx::utf8::validate(aux_down_text)) {
+    aux_down.append(aux_down_text);
+  }
   ic->inputPanel().setPreedit(preedit);
   ic->inputPanel().setAuxDown(aux_down);
   ic->updatePreedit();
