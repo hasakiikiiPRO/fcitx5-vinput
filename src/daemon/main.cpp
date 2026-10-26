@@ -631,6 +631,10 @@ int main(int argc, char* argv[]) {
   int notify_fd = dbus.GetNotifyFd();
   int runtime_notify_fd = runtime_controller.GetNotifyFd();
   while (g_running) {
+    while (dbus.ProcessOnce()) {
+      // Drain messages already queued by synchronous D-Bus calls before polling.
+    }
+
     pollfd fds[3] = {
         {.fd = dbus_fd, .events = POLLIN, .revents = 0},
         {.fd = notify_fd, .events = POLLIN, .revents = 0},
