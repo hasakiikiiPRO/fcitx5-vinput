@@ -429,7 +429,7 @@ private:
     return true;
   }
 
-  void QueueError(std::string error_text) {
+  void QueueError(std::string_view error_text) {
     const std::string_view trimmed = vinput::str::Trim(error_text);
     saw_error_ = true;
     events_.push_back(
