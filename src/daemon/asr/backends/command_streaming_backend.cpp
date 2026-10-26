@@ -430,9 +430,10 @@ private:
   }
 
   void QueueError(std::string error_text) {
-    error_text = FormatProviderError(std::move(error_text), "failed.");
+    const std::string_view trimmed = vinput::str::Trim(error_text);
     saw_error_ = true;
-    events_.push_back({RecognitionEventKind::Error, {}, std::move(error_text)});
+    events_.push_back(
+        {RecognitionEventKind::Error, {}, trimmed.empty() ? "failed." : std::string(trimmed)});
   }
 
   void QueueCompleted() {
