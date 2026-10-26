@@ -10,6 +10,7 @@
 #include <thread>
 #include <vector>
 
+#include "common/audio/level_meter.h"
 #include "common/dbus/dbus_interface.h"
 
 #include "daemon/asr/runtime/recognition_contract.h"
@@ -95,6 +96,7 @@ private:
   std::optional<std::chrono::steady_clock::time_point> first_non_silent_at_;
   bool first_partial_logged_ = false;
   std::chrono::steady_clock::time_point last_audio_level_at_{};
+  vinput::audio::LevelMeter level_meter_;
   bool start_recording_in_progress_ = false;
   bool pending_asr_backend_reload_ = false;
   int notify_fd_ = -1;

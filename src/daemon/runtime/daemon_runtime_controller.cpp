@@ -441,6 +441,8 @@ DaemonRuntimeController::StartRecordingInternal(bool is_command, const std::stri
       recording_started_at_ = std::chrono::steady_clock::now();
       first_non_silent_at_.reset();
       first_partial_logged_ = false;
+      level_meter_.Reset();
+      last_audio_level_at_ = recording_started_at_.value();
       accepting_chunks_.store(true, std::memory_order_relaxed);
       phase_ = vinput::dbus::Status::Recording;
       start_recording_in_progress_ = false;
@@ -514,8 +516,14 @@ void DaemonRuntimeController::HandleIncomingAudio(std::span<const int16_t> pcm) 
     // Feed the recording waveform at a UI-friendly rate.
     const auto now = std::chrono::steady_clock::now();
     if (now - last_audio_level_at_ >= std::chrono::milliseconds(50)) {
+      const double dt = std::chrono::duration<double>(now - last_audio_level_at_).count();
       last_audio_level_at_ = now;
-      dbus_->EmitAudioLevel(LevelFromPcm(pcm_view));
+      const double raw = LevelFromPcm(pcm_view);
+      const double display = level_meter_.Update(raw, dt);
+      if (vinput::debug::Enabled()) {
+        vinput::debug::Log("[level] raw=%.3f display=%.3f\n", raw, display);
+      }
+      dbus_->EmitAudioLevel(display);
     }
 
     if (UsesBufferedDelivery(active_backend_)) {

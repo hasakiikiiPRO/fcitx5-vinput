@@ -70,3 +70,11 @@ target_link_libraries(waveform_tests PRIVATE
 )
 
 add_test(NAME waveform_tests COMMAND waveform_tests)
+
+add_executable(level_meter_tests level_meter_tests.cpp)
+
+target_include_directories(level_meter_tests PRIVATE
+    ${CMAKE_SOURCE_DIR}/src
+)
+
+add_test(NAME level_meter_tests COMMAND level_meter_tests)
