@@ -1,4 +1,7 @@
+#include <algorithm>
 #include <chrono>
+#include <cmath>
+#include <cstdint>
 #include <cstdio>
 #include <fcitx-utils/dbus/matchrule.h>
 #include <fcitx-utils/dbus/message.h>
@@ -32,10 +35,6 @@ constexpr auto kPolledIdleRecoveryDelay =
 std::string StartingPreeditText() {
   return _("... Starting ...");
 }
-std::string RecordingPreeditText() {
-  return _("... Recording ...");
-}
-
 std::string CommandingPreeditText() {
   return _("... Commanding ...");
 }
@@ -336,6 +335,13 @@ void VinputEngine::setupDBusWatcher() {
     onDaemonNotification(msg);
     return true;
   });
+
+  fcitx::dbus::MatchRule level_rule(kBusName, kObjectPath, kInterface, kSignalAudioLevel);
+
+  audio_level_slot_ = bus_->addMatch(level_rule, [this](fcitx::dbus::Message& msg) {
+    onAudioLevel(msg);
+    return true;
+  });
 }
 
 bool VinputEngine::callStartRecording() {
@@ -547,9 +553,11 @@ void VinputEngine::enterRecordingState(fcitx::InputContext* ic, const fcitx::Key
     session_->raw_prev = raw_prev;
   }
   status_ic_ = ic;
+  wave_level_ = 0.0F;
+  wave_bars_.clear();
   updateVoicePresentation(
       ic, ComposeLivePreedit(session_ ? session_->transcript_text : std::string{},
-                             command_mode ? CommandingPreeditText() : RecordingPreeditText(),
+                             command_mode ? CommandingPreeditText() : RecordingDisplayText(),
                              max_streaming_display_width_));
   ensureStatusSync();
   if (stop_after_start) {
@@ -947,8 +955,53 @@ void VinputEngine::handleRecognitionPartial(const std::string& transcript_text) 
 
   updateVoicePresentation(ic, ComposeLivePreedit(transcript_text,
                                                  session_->command_mode ? CommandingPreeditText()
-                                                                        : RecordingPreeditText(),
+                                                                        : RecordingDisplayText(),
                                                  max_streaming_display_width_));
+}
+
+std::string VinputEngine::RenderWaveformText() const {
+  static constexpr char kBlocks[] = " ▁▂▃▄▅▆▇█";
+  static constexpr std::size_t kBlockCount = sizeof(kBlocks) - 2;
+  std::string wave;
+  wave.reserve(wave_bars_.size());
+  for (std::uint8_t bar : wave_bars_) {
+    wave.push_back(kBlocks[std::min<std::size_t>(bar, kBlockCount)]);
+  }
+  return wave;
+}
+
+std::string VinputEngine::RecordingDisplayText() const {
+  return std::string(_("● 正在录音 ")) + RenderWaveformText();
+}
+
+void VinputEngine::refreshRecordingWaveform() {
+  if (!session_ || session_->phase != Session::Phase::Recording || session_->command_mode) {
+    return;
+  }
+  auto* ic = status_ic_ ? status_ic_ : resolveFrontendInputContext();
+  if (!ic) {
+    return;
+  }
+  updateVoicePresentation(ic, ComposeLivePreedit(session_->transcript_text, RenderWaveformText(),
+                                                 max_streaming_display_width_));
+}
+
+void VinputEngine::onAudioLevel(fcitx::dbus::Message& msg) {
+  double level = 0.0;
+  msg >> level;
+  if (!session_ || session_->phase != Session::Phase::Recording) {
+    return;
+  }
+  wave_level_ = std::clamp(static_cast<float>(level), 0.0F, 1.0F);
+  constexpr std::size_t kBarCount = 12;
+  const auto bar = static_cast<std::uint8_t>(std::lround(wave_level_ * 8.0F));
+  if (wave_bars_.size() != kBarCount) {
+    wave_bars_.assign(kBarCount, 0);
+  } else {
+    std::rotate(wave_bars_.begin(), wave_bars_.begin() + 1, wave_bars_.end());
+  }
+  wave_bars_.back() = bar;
+  refreshRecordingWaveform();
 }
 
 void VinputEngine::onStatusChanged(fcitx::dbus::Message& msg) {

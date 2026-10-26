@@ -84,6 +84,10 @@ private:
   void onRecognitionPartial(fcitx::dbus::Message& msg);
   void handleRecognitionPartial(const std::string& transcript_text);
   void onStatusChanged(fcitx::dbus::Message& msg);
+  void onAudioLevel(fcitx::dbus::Message& msg);
+  void refreshRecordingWaveform();
+  std::string RenderWaveformText() const;
+  std::string RecordingDisplayText() const;
   void onDaemonNotification(fcitx::dbus::Message& msg);
   void showDaemonNotification(const vinput::dbus::ErrorInfo& notification);
   void notifyError(const vinput::dbus::ErrorInfo& error);
@@ -128,6 +132,7 @@ private:
   std::unique_ptr<fcitx::dbus::Slot> partial_slot_;
   std::unique_ptr<fcitx::dbus::Slot> status_slot_;
   std::unique_ptr<fcitx::dbus::Slot> error_slot_;
+  std::unique_ptr<fcitx::dbus::Slot> audio_level_slot_;
   std::unique_ptr<fcitx::dbus::Slot> pending_start_call_slot_;
   std::unique_ptr<fcitx::dbus::Slot> pending_stop_call_slot_;
   struct Session {
@@ -143,6 +148,8 @@ private:
     bool stop_on_release = false;
   };
   std::optional<Session> session_;
+  float wave_level_ = 0.0F;
+  std::vector<std::uint8_t> wave_bars_;
   fcitx::InputContext* status_ic_ = nullptr;
   fcitx::InputContext* last_active_ic_ = nullptr;
   fcitx::InputContext* palette_menu_ic_ = nullptr;

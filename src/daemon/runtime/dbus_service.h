@@ -43,6 +43,7 @@ public:
   void EmitRecognitionPartial(const std::string& text);
   void EmitStatusChanged(const std::string& status);
   void EmitNotification(const vinput::dbus::ErrorInfo& notification);
+  void EmitAudioLevel(double level);
 
   void SetStartHandler(std::function<MethodResult()> handler);
   void SetStartCommandHandler(std::function<MethodResult(const std::string&)> handler);
@@ -70,10 +71,11 @@ private:
   int notify_fd_ = -1;
 
   struct PendingEmit {
-    enum class Type { Result, Partial, Status, Notification };
+    enum class Type { Result, Partial, Status, Notification, AudioLevel };
     Type type;
     std::string payload;
     vinput::dbus::ErrorInfo notification;
+    double level = 0.0;
   };
   std::mutex emit_mutex_;
   std::vector<PendingEmit> emit_queue_;

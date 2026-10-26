@@ -59,6 +59,24 @@ bool HasNonSilentAudio(std::span<const int16_t> pcm) {
   return peak >= kNonSilentPeakThreshold || rms >= kNonSilentRmsThreshold;
 }
 
+// Map RMS to a display level: -60 dBFS is 0, 0 dBFS is 1.
+double LevelFromPcm(std::span<const int16_t> pcm) {
+  if (pcm.empty()) {
+    return 0.0;
+  }
+  double sum_squares = 0.0;
+  for (int16_t sample : pcm) {
+    sum_squares += static_cast<double>(sample) * static_cast<double>(sample);
+  }
+  const double rms = std::sqrt(sum_squares / static_cast<double>(pcm.size()));
+  if (rms <= 1.0) {
+    return 0.0;
+  }
+  const double dbfs = 20.0 * std::log10(rms / 32768.0);
+  const double level = (dbfs + 60.0) / 60.0;
+  return std::clamp(level, 0.0, 1.0);
+}
+
 long MillisecondsSince(const std::optional<std::chrono::steady_clock::time_point>& start,
                        std::chrono::steady_clock::time_point end) {
   if (!start.has_value()) {
@@ -491,6 +509,13 @@ void DaemonRuntimeController::HandleIncomingAudio(std::span<const int16_t> pcm) 
       first_non_silent_at_ = std::chrono::steady_clock::now();
       vinput::debug::Log("first non-silent audio after %ld ms\n",
                          MillisecondsSince(recording_started_at_, *first_non_silent_at_));
+    }
+
+    // Feed the recording waveform at a UI-friendly rate.
+    const auto now = std::chrono::steady_clock::now();
+    if (now - last_audio_level_at_ >= std::chrono::milliseconds(50)) {
+      last_audio_level_at_ = now;
+      dbus_->EmitAudioLevel(LevelFromPcm(pcm_view));
     }
 
     if (UsesBufferedDelivery(active_backend_)) {

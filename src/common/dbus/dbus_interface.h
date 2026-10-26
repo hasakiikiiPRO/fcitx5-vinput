@@ -29,6 +29,8 @@ constexpr const char* kSignalRecognitionResult = "RecognitionResult";
 constexpr const char* kSignalRecognitionPartial = "RecognitionPartial";
 constexpr const char* kSignalStatusChanged = "StatusChanged";
 constexpr const char* kSignalDaemonNotification = "DaemonNotification";
+// Live recording feedback: normalized input level in [0, 1].
+constexpr const char* kSignalAudioLevel = "AudioLevel";
 
 constexpr const char* kErrorOperationFailed = "org.fcitx.Vinput.Error.OperationFailed";
 constexpr const char* kStatusIdle = "idle";

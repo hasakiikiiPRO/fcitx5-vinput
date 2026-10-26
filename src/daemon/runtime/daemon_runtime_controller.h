@@ -94,6 +94,7 @@ private:
   std::optional<std::chrono::steady_clock::time_point> recording_started_at_;
   std::optional<std::chrono::steady_clock::time_point> first_non_silent_at_;
   bool first_partial_logged_ = false;
+  std::chrono::steady_clock::time_point last_audio_level_at_{};
   bool start_recording_in_progress_ = false;
   bool pending_asr_backend_reload_ = false;
   int notify_fd_ = -1;
