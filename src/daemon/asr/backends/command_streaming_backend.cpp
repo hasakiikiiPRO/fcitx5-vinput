@@ -352,36 +352,32 @@ private:
     return true;
   }
 
+  void DrainStderrLines(bool flush_tail) {
+    vinput::process::DrainLinesFromBuffer(
+        stderr_buffer_,
+        [&](std::string_view raw_line) {
+          const std::string line(vinput::str::Trim(raw_line));
+          if (!line.empty()) {
+            stderr_tail_ = line;
+          }
+        },
+        flush_tail);
+  }
+
   void ConsumeStderrChunk(std::span<const std::byte> bytes) {
     if (notification_bridge_ != nullptr) {
       notification_bridge_->FeedStderr(source_id_, bytes);
     }
     const auto* data_ptr = reinterpret_cast<const char*>(bytes.data());
     stderr_buffer_.append(data_ptr, bytes.size());
-    vinput::process::DrainLinesFromBuffer(
-        stderr_buffer_,
-        [&](std::string_view raw_line) {
-          const std::string line(vinput::str::Trim(raw_line));
-          if (!line.empty()) {
-            stderr_tail_ = line;
-          }
-        },
-        false);
+    DrainStderrLines(false);
   }
 
   void FlushStderr() {
     if (notification_bridge_ != nullptr) {
       notification_bridge_->Flush(source_id_);
     }
-    vinput::process::DrainLinesFromBuffer(
-        stderr_buffer_,
-        [&](std::string_view raw_line) {
-          const std::string line(vinput::str::Trim(raw_line));
-          if (!line.empty()) {
-            stderr_tail_ = line;
-          }
-        },
-        true);
+    DrainStderrLines(true);
   }
 
   void ConsumeStdoutLines(std::string* error) {
