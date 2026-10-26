@@ -13,6 +13,7 @@ if [[ ${EUID} -ne 0 ]]; then
 fi
 
 install_qt_apt() {
+  export DEBIAN_FRONTEND=noninteractive
   "${sudo_cmd[@]}" apt-get install -y \
     qt6-base-dev \
     qt6-tools-dev \
@@ -39,7 +40,11 @@ install_qt_zypper() {
 
 case "${target}" in
 ubuntu24.04)
-  "${sudo_cmd[@]}" apt-get update
+  if grep -rq "azure\.archive\.ubuntu\.com" /etc/apt 2>/dev/null; then
+    grep -rl "azure\.archive\.ubuntu\.com" /etc/apt | xargs -r "${sudo_cmd[@]}" sed -i 's|azure\.archive\.ubuntu\.com|archive.ubuntu.com|g'
+  fi
+  export DEBIAN_FRONTEND=noninteractive
+  "${sudo_cmd[@]}" apt-get update -o Acquire::Retries=3
   "${sudo_cmd[@]}" apt-get install -y \
     bzip2 \
     clang \
